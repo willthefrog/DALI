@@ -20,6 +20,7 @@ import ctypes
 import logging
 import math
 
+from nvidia.dali import types
 from nvidia.dali.backend import TensorListCPU, TensorGPU, TensorListGPU
 from paddle import fluid
 
@@ -155,7 +156,8 @@ class DALIGenericIterator(object):
         self._pipes = pipelines
         # Build all pipelines
         for p in self._pipes:
-            p.build()
+            with p._check_api_type_scope(types.PipelineAPIType.ITERATOR):
+                p.build()
         # Use double-buffering of data batches
         self._data_batches = [[None, None] for i in range(self._num_gpus)]
         self._counter = 0
@@ -177,7 +179,8 @@ class DALIGenericIterator(object):
         # We need data about the batches (like shape information),
         # so we need to run a single batch as part of setup to get that info
         for p in self._pipes:
-            p.schedule_run()
+            with p._check_api_type_scope(types.PipelineAPIType.ITERATOR):
+                p.schedule_run()
         self._first_batch = None
         self._first_batch = self.next()
 
@@ -194,7 +197,8 @@ class DALIGenericIterator(object):
         # Gather outputs
         outputs = []
         for p in self._pipes:
-            outputs.append(p.share_outputs())
+            with p._check_api_type_scope(types.PipelineAPIType.ITERATOR):
+               outputs.append(p.share_outputs())
 
         for i in range(self._num_gpus):
             dev_id = self._pipes[i].device_id
@@ -266,8 +270,9 @@ class DALIGenericIterator(object):
                 feed_ndarray(tensor, ptr)
 
         for p in self._pipes:
-            p.release_outputs()
-            p.schedule_run()
+            with p._check_api_type_scope(types.PipelineAPIType.ITERATOR):
+                p.release_outputs()
+                p.schedule_run()
 
         copy_db_index = self._current_data_batch
         # Change index for double buffering
@@ -322,6 +327,9 @@ class DALIGenericIterator(object):
                self._counter = self._counter % self._size
             for p in self._pipes:
                 p.reset()
+                if p.empty():
+                    with p._check_api_type_scope(types.PipelineAPIType.ITERATOR):
+                        p.schedule_run()
         else:
             logging.warning("DALI iterator does not support resetting while epoch is not finished. Ignoring...")
 
