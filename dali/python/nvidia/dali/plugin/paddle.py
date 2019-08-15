@@ -20,6 +20,11 @@ import ctypes
 import logging
 import math
 
+try:
+    from collections.abc import Mapping
+except Exception:
+    from collections import Mapping
+
 from paddle import fluid
 
 to_pd_type = {
@@ -51,6 +56,18 @@ def feed_ndarray(dali_tensor, ptr):
     return ptr
 
 
+def recursive_length(shape, level):
+    # since all Dali tensors are dense, this should suffice
+    assert shape, "shape should not be empty"
+    last = 1
+    seq_length = []
+    for i in range(level):
+        cur = shape[i]
+        seq_length.append([cur] * last)
+        last *= cur
+    return seq_length
+
+
 class DALIGenericIterator(object):
     """
     General DALI iterator for Paddle. It can return any number of
@@ -60,12 +77,14 @@ class DALIGenericIterator(object):
     ----------
     pipelines : list of nvidia.dali.pipeline.Pipeline
                 List of pipelines to use
-    output_map : list of str
+    output_map : list of str or `OrderedDict` of form (str:int)
                  List of strings which maps consecutive outputs
                  of DALI pipelines to user specified name.
                  Outputs will be returned from iterator as dictionary
                  of those names.
                  Each name should be distinct
+                 If `OrderedDict` is given, the keys are name of the outputs
+                 and the values are the LoD levels
     size : int
            Number of samples in the epoch (Usually the size of the dataset).
     auto_reset : bool, optional, default = False
@@ -109,9 +128,13 @@ class DALIGenericIterator(object):
         self._data_batches = [[None, None] for i in range(self._num_gpus)]
         self._counter = 0
         self._current_data_batch = 0
+        if isinstance(output_map, Mapping):
+            self.output_lod = list(output_map.values())
+            output_map = list(output_map.keys())
+        else:
+            self.output_lod = [0 for _ in output_map]
         assert len(set(output_map)) == len(output_map), \
             "output_map names should be distinct"
-        self._output_categories = set(output_map)
         self.output_map = output_map
 
         # We need data about the batches (like shape information),
@@ -152,25 +175,27 @@ class DALIGenericIterator(object):
                 category_shapes[category] = category_tensors[category].shape()
 
             category_pd_type = dict()
-            category_place = dict()
+            category_info = dict()
             pd_gpu_place = fluid.CUDAPlace(dev_id)
             pd_cpu_place = fluid.CPUPlace()
 
             # check category and device
-            for category in self._output_categories:
+            for category, lod in zip(self.output_map, self.output_lod):
                 category_pd_type[category] = to_pd_type[
                     category_tensors[category].dtype()]
                 from nvidia.dali.backend import TensorGPU
                 if type(category_tensors[category]) is TensorGPU:
-                    category_place[category] = pd_gpu_place
+                    category_info[category] = (pd_gpu_place, lod)
                 else:
-                    category_place[category] = pd_cpu_place
+                    category_info[category] = (pd_cpu_place, lod)
 
             if self._data_batches[i][self._current_data_batch] is None:
                 pd_tensors = dict()
-                for category in self._output_categories:
+                for category, lod in zip(self.output_map, self.output_lod):
                     lod_tensor = fluid.core.LoDTensor()
                     lod_tensor._set_dims(category_shapes[category])
+                    seq_len = recursive_length(category_shapes[category], lod)
+                    lod_tensor.set_recursive_sequence_lengths(seq_len)
                     pd_tensors[category] = lod_tensor
                 self._data_batches[i][self._current_data_batch] = pd_tensors
             else:
@@ -182,11 +207,13 @@ class DALIGenericIterator(object):
                     tensor.shape() == pd_tensors[category].shape(), \
                     ("Shapes do not match: DALI tensor has size {0}, "
                      "but LoDTensor has size {1}".format(
-                         tensor.shape(), lod_tensor.shape()))
+                         tensor.shape(), pd_tensors[category].shape()))
 
                 lod_tensor = pd_tensors[category]
                 lod_tensor._set_dims(category_shapes[category])
-                ptr = lod_tensor._mutable_data(category_place[category],
+                seq_len = recursive_length(category_shapes[category], lod)
+                lod_tensor.set_recursive_sequence_lengths(seq_len)
+                ptr = lod_tensor._mutable_data(category_info[category][0],
                                                category_pd_type[category])
                 feed_ndarray(tensor, ptr)
 
@@ -219,7 +246,7 @@ class DALIGenericIterator(object):
             output = [db[copy_db_index] for db in
                       self._data_batches[0:num_gpus_to_grab]]
             output[-1] = output[-1].copy()
-            for category in self._output_categories:
+            for category in self.output_map:
                 output[-1][category] = output[-1][category][0:data_from_last_gpu]
             return output
 
