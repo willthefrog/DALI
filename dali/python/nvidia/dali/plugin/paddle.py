@@ -23,7 +23,7 @@ import math
 from nvidia.dali.backend import TensorListCPU, TensorGPU, TensorListGPU
 from paddle import fluid
 
-to_pd_type = {
+dtype_map = {
     "=?": fluid.core.VarDesc.VarType.BOOL,
     "=e": fluid.core.VarDesc.VarType.FP16,
     "=f": fluid.core.VarDesc.VarType.FP32,
@@ -35,6 +35,25 @@ to_pd_type = {
     "=q": fluid.core.VarDesc.VarType.INT64,
     "=l": fluid.core.VarDesc.VarType.INT64
 }
+
+
+def to_paddle_type(tensor):
+    r"""
+    Get paddle dtype for given tensor or tensor list
+
+    Args:
+        tensor: tensor or tensor list
+
+    Returns: fluid.core.VarDesc.VarType
+    """
+    if isinstance(tensor, (TensorListCPU, TensorListGPU)):
+        tensor = tensor.at(0)
+    dtype = tensor.dtype
+    if callable(dtype):
+        dtype = dtype()
+    else:
+        dtype = '=' + dtype.char
+    return dtype_map[dtype]
 
 
 def feed_ndarray(dali_tensor, ptr):
@@ -78,9 +97,9 @@ def recursive_length(tensor, lod_level):
                 for i in range(length):
                     _recurse(data[1:], result[1:], level - 1)
 
-    seq_length = [[] for _ in range(lod_level)]
-    _recurse(tensor, seq_length, lod_level)
-    return seq_length
+    seq_len = [[] for _ in range(lod_level)]
+    _recurse(tensor, seq_len, lod_level)
+    return seq_len
 
 
 class DALIGenericIterator(object):
@@ -141,12 +160,19 @@ class DALIGenericIterator(object):
         self._data_batches = [[None, None] for i in range(self._num_gpus)]
         self._counter = 0
         self._current_data_batch = 0
+
+        normalized_map = {}
+        for v in output_map:
+            if isinstance(v, str):
+                normalized_map[v] = 0
+            else:
+                normalized_map[v[0]] = v[1]
+        self.normalized_map = normalized_map
+
         output_map = [isinstance(v, str) and v or v[0] for v in output_map]
-        output_lod = [not isinstance(v, str) and v[1] or 0 for v in output_map]
         assert len(set(output_map)) == len(output_map), \
             "output_map names should be distinct"
         self.output_map = output_map
-        self.output_lod = output_lod
 
         # We need data about the batches (like shape information),
         # so we need to run a single batch as part of setup to get that info
@@ -178,84 +204,65 @@ class DALIGenericIterator(object):
             for j, out in enumerate(outputs[i]):
                 category_outputs[self.output_map[j]] = out
 
-            # Change DALI TensorLists into Tensors
-            category_tensors = dict()
-            category_shapes = dict()
-            for category, out in category_outputs.items():
-                tensor = out
-                if out.is_dense_tensor():
-                    tensor = out.as_tensor()
-                    category_shapes[category] = tensor.shape()
-                else:
-                    num_tensors = len(out)
-                    first_dim = 0
-                    rest = None
-                    # stack along the first dim
-                    for j in range(num_tensors):
-                        shape = out.at(j).shape
-                        # this could be TensorGPU or numpy.ndarray
-                        if callable(shape):
-                            shape = shape()
-                        if rest is None:
-                            rest = shape[1:]
-                        else:
-                            assert rest == shape[1:], "tensors should have " +\
-                                "the same dims except the first one"
-                        first_dim += shape[0]
-                    category_shapes[category] = [num_tensors, first_dim]
-                    category_shapes[category] += list(rest)
-                category_tensors[category] = tensor
-
-            category_pd_type = dict()
-            category_info = dict()
             pd_gpu_place = fluid.CUDAPlace(dev_id)
             pd_cpu_place = fluid.CPUPlace()
 
-            # check category and device
-            for category, lod in zip(self.output_map, self.output_lod):
-                tensor = category_tensors[category]
-                if isinstance(category_tensors[category],
-                              (TensorListCPU, TensorListGPU)):
-                    tensor = category_tensors[category].at(0)
+            category_pd_type = dict()
+            category_place = dict()
+            category_tensors = dict()
+            category_shapes = dict()
+            category_lengths = dict()
+            for cat, out in category_outputs.items():
+                lod = self.normalized_map[cat]
+                assert out.is_dense_tensor() or lod > 0, \
+                    "non-dense tensor lists must have LoD > 0"
 
-                if isinstance(tensor, TensorGPU):
-                    category_info[category] = (pd_gpu_place, lod)
+                if lod > 0:
+                    # +1 for batch dim
+                    seq_len = recursive_length(out, lod + 1)[1:]
+                    shape = out.at(0).shape
+                    if callable(shape):
+                        shape = shape()
+                    shape = [sum(seq_len[-1])] + list(shape[lod:])
+                    category_shapes[cat] = shape
+                    category_lengths[cat] = seq_len
                 else:
-                    category_info[category] = (pd_cpu_place, lod)
+                    out = out.as_tensor()
+                    category_shapes[cat] = out.shape()
+                    category_lengths[cat] = []
 
-                dtype = tensor.dtype
-                if callable(dtype):
-                    dtype = dtype()
+                category_tensors[cat] = out
+                category_pd_type[cat] = to_paddle_type(out)
+                if isinstance(out, (TensorGPU, TensorListGPU)):
+                    category_place[cat] = pd_gpu_place
                 else:
-                    dtype = '=' + dtype.char
-                category_pd_type[category] = to_pd_type[dtype]
+                    category_place[cat] = pd_cpu_place
 
             if self._data_batches[i][self._current_data_batch] is None:
-                pd_tensors = dict()
-                for category, lod in zip(self.output_map, self.output_lod):
+                pd_tensors = {}
+                for cat, lod in self.normalized_map.items():
                     lod_tensor = fluid.core.LoDTensor()
-                    lod_tensor._set_dims(category_shapes[category])
-                    seq_len = recursive_length(category_tensors[category], lod)
-                    lod_tensor.set_recursive_sequence_lengths(seq_len)
-                    pd_tensors[category] = lod_tensor
+                    lod_tensor._set_dims(category_shapes[cat])
+                    pd_tensors[cat] = lod_tensor
                 self._data_batches[i][self._current_data_batch] = pd_tensors
             else:
                 pd_tensors = self._data_batches[i][self._current_data_batch]
 
             # Copy data from DALI Tensors to LoDTensors
-            for category, tensor in category_tensors.items():
-                assert self._dynamic_shape or \
-                    tensor.shape() == pd_tensors[category].shape(), \
-                    ("Shapes do not match: DALI tensor has size {0}, "
-                     "but LoDTensor has size {1}".format(
-                         tensor.shape(), pd_tensors[category].shape()))
+            for cat, tensor in category_tensors.items():
+                if hasattr(tensor, 'shape'):  # could be tensor list
+                    assert self._dynamic_shape or \
+                        tensor.shape() == pd_tensors[cat].shape(), \
+                        ("Shapes do not match: DALI tensor has size {0}, "
+                         "but LoDTensor has size {1}".format(
+                             tensor.shape(), pd_tensors[cat].shape()))
 
-                lod_tensor = pd_tensors[category]
-                lod_tensor._set_dims(category_shapes[category])
-                seq_len = recursive_length(category_tensors[category], lod)
+                lod_tensor = pd_tensors[cat]
+                lod_tensor._set_dims(category_shapes[cat])
+                seq_len = category_lengths[cat]
                 lod_tensor.set_recursive_sequence_lengths(seq_len)
-                ptr = lod_tensor._mutable_data(category_info[category][0],
-                                               category_pd_type[category])
+                ptr = lod_tensor._mutable_data(category_place[cat],
+                                               category_pd_type[cat])
                 feed_ndarray(tensor, ptr)
 
         for p in self._pipes:
@@ -287,8 +294,8 @@ class DALIGenericIterator(object):
             output = [db[copy_db_index] for db in
                       self._data_batches[0:num_gpus_to_grab]]
             output[-1] = output[-1].copy()
-            for category in self.output_map:
-                output[-1][category] = output[-1][category][0:data_from_last_gpu]
+            for cat in self.output_map:
+                output[-1][cat] = output[-1][cat][0:data_from_last_gpu]
             return output
 
         return [db[copy_db_index] for db in self._data_batches]
