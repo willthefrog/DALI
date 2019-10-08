@@ -3,13 +3,13 @@ Temporal Shift Module inference in PaddlePaddle
 
 This demo shows how to use DALI pipeline for video classification in PaddlePaddle.
 
-The TSM model from `TSM: Temporal Shift Module for Efficient Video Understanding <https://arxiv.org/abs/1811.08383>`_ is used.
+The model used for this demo is `TSM: Temporal Shift Module for Efficient Video Understanding <https://arxiv.org/abs/1811.08383>`_.
 
-The model weights trained on `kinetics400 <https://github.com/activitynet/ActivityNet/tree/master/Crawler/Kinetics>`_ will be downloaded automatically for inference.
+It is trained on `kinetics400 <https://github.com/activitynet/ActivityNet/tree/master/Crawler/Kinetics>`_ and weights will be downloaded automatically.
 
-Videos from kinetics400 should be resized to 300p and clipped to 10 second in length, which can be done with ``ffpmeg``.
+For inference, videos should be resized to 300p and clipped to 10 second in length, which can be done with ``ffpmeg``.
 
-We can download and preprocess some videos from kinetics400 valset for demoing purposes.
+Run the following commands to download and preprocess some videos from kinetics400 valset.
 
 .. code-block:: bash
 
@@ -20,7 +20,7 @@ We can download and preprocess some videos from kinetics400 valset for demoing p
    ffmpeg -y -i demo/tmp.mp4 -filter:v scale=-1:300 -ss 0 -t 10 -c:a copy demo/2.mp4
    rm demo/tmp.mp4
 
-The script will extract 8 frames from the video with a stride of s (30 by default), and output top k predicted (1 by default) labels.
+The script will extract 8 frames from the input videos with a stride of ``s`` (30 by default), and will output top ``k`` predicted (1 by default) labels for each video.
 
 .. code-block:: bash
 
@@ -38,8 +38,6 @@ Requirements
   - `PaddlePaddle <https://www.paddlepaddle.org>`_ (1.6 or above)
 
   - `Nvidia DALI <https://github.com/NVIDIA/DALI>`_
-
-  - `numpy <https://numpy.org/>`_
 
 - Optionally, the following programs are needed for preparing the input videos.
 

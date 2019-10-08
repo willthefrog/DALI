@@ -32,8 +32,6 @@ Requirements
 
   - `Pycocotools <https://github.com/cocodataset/cocoapi>`_
 
-  - `Numpy <https://numpy.org/>`_
-
 Usage
 -----
 
