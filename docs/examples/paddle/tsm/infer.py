@@ -17,9 +17,6 @@ from utils import load_weights
 
 PRETRAIN_WEIGHTS = 'https://paddlemodels.bj.bcebos.com/video_classification/TSM_final.pdparams'
 
-# TODO interval sampling
-# TODO resize shorter to 300 with FFMPEG
-
 
 class VideoPipe(Pipeline):
     def __init__(self, video_files, sequence_length=8, target_size=224,
