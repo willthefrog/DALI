@@ -163,7 +163,7 @@ class SSD(object):
         self.backbone = VGG()
         self.num_classes = num_classes
 
-    def __call__(self, image, gt_box, gt_label, mode='train'):
+    def __call__(self, image, gt_box, gt_label):
         body_feats = self.backbone(image)
 
         locs, confs, box, box_var = fluid.layers.multi_box_head(
@@ -186,15 +186,4 @@ class SSD(object):
         loss = fluid.layers.ssd_loss(locs, confs, gt_box, gt_label, box,
                                      box_var)
         loss = fluid.layers.reduce_sum(loss)
-        if mode == 'train':
-            return loss
-
-        pred = fluid.layers.detection_output(
-            locs, confs, box, box_var,
-            nms_threshold=0.45,
-            nms_top_k=400,
-            keep_top_k=200,
-            score_threshold=0.01,
-            nms_eta=1.0,
-            background_label=0)
-        return loss, pred
+        return loss

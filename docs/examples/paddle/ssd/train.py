@@ -41,7 +41,6 @@ class HybridTrainPipe(Pipeline):
             shard_id=local_rank,
             num_shards=world_size,
             ratio=True,
-            clip=True,
             ltrb=True,
             shuffle_after_epoch=True)
 
@@ -62,10 +61,10 @@ class HybridTrainPipe(Pipeline):
             resize_y=300,
             min_filter=types.DALIInterpType.INTERP_TRIANGULAR)
         self.twist = ops.ColorTwist(device="gpu")
-        self.normalize = ops.CropMirrorNormalize(
+        self.cmnp = ops.CropMirrorNormalize(
             device="gpu",
-            mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
-            std=[0.229 * 255, 0.224 * 255, 0.225 * 255],
+            mean=[104., 117., 123.],
+            std=[1., 1., 1.],
             output_dtype=types.FLOAT,
             output_layout=types.NCHW,
             pad_output=False)
@@ -96,7 +95,7 @@ class HybridTrainPipe(Pipeline):
             contrast=contrast,
             brightness=brightness,
             hue=hue)
-        images = self.normalize(images)
+        images = self.cmnp(images, mirror=flip)
         return images, bboxes, labels
 
 
@@ -114,7 +113,7 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def build(mode='train'):
+def build():
     model = SSD()
 
     image = fluid.layers.data(
@@ -124,7 +123,7 @@ def build(mode='train'):
     gt_label = fluid.layers.data(
         name='gt_label', shape=[1], dtype='int32', lod_level=1)
 
-    return model(image, gt_box, gt_label, mode)
+    return model(image, gt_box, gt_label)
 
 
 def main():
@@ -191,7 +190,7 @@ def main():
     def forever():
         while True:
             try:
-                yield next(train_loader)[0]
+                yield next(train_loader)
             except StopIteration:
                 pass
 
