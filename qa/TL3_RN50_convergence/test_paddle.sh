@@ -22,6 +22,7 @@ fi
 LOG=dali.log
 
 SECONDS=0
+export FLAGS_fraction_of_gpu_memory_to_use=.85
 python -m paddle.distributed.launch --selected_gpus $(echo $GPUS | tr ' ' ',') main.py -b 128 -j 4 --lr=0.4 ./ 2>&1 | tee $LOG
 
 RET=${PIPESTATUS[0]}
