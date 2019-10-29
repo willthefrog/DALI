@@ -152,7 +152,7 @@ def run(exe, prog, fetch_list, loader, epoch):
         data_time.update(time.time() - end)
 
         loss, prec1, prec5 = exe.run(
-            prog, feed=batch[0], fetch_list=fetch_list)
+            prog, feed=batch, fetch_list=fetch_list)
         prec5 = np.mean(prec5)
         loss = np.mean(loss)
         prec1 = np.mean(prec1)
