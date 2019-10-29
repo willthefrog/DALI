@@ -54,6 +54,7 @@ class HybridTrainPipe(Pipeline):
             mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
             std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
         self.coin = ops.CoinFlip(probability=0.5)
+        self.to_int64 = ops.Cast(dtype=types.INT64, device="gpu")
 
     def define_graph(self):
         rng = self.coin()
@@ -61,7 +62,7 @@ class HybridTrainPipe(Pipeline):
         images = self.decode(jpegs)
         images = self.res(images)
         output = self.cmnp(images.gpu(), mirror=rng)
-        return [output, labels]
+        return [output, self.to_int64(labels.gpu())]
 
     def __len__(self):
         return self.epoch_size("Reader")
@@ -90,13 +91,14 @@ class HybridValPipe(Pipeline):
             image_type=types.RGB,
             mean=[0.485 * 255, 0.456 * 255, 0.406 * 255],
             std=[0.229 * 255, 0.224 * 255, 0.225 * 255])
+        self.to_int64 = ops.Cast(dtype=types.INT64, device="gpu")
 
     def define_graph(self):
         jpegs, labels = self.input(name="Reader")
         images = self.decode(jpegs)
         images = self.res(images)
         output = self.cmnp(images)
-        return [output, labels]
+        return [output, self.to_int64(labels.gpu())]
 
     def __len__(self):
         return self.epoch_size("Reader")
@@ -125,7 +127,6 @@ def build():
     label = fluid.layers.data(name='label', shape=[1], dtype='int32')
 
     logits = model(image)
-    label = fluid.layers.cast(label, 'int64')
     loss, pred = fluid.layers.softmax_with_cross_entropy(
         logits, label, return_softmax=True)
     avg_loss = fluid.layers.mean(x=loss)
